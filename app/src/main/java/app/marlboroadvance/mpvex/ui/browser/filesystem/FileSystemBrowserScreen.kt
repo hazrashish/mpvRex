@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FileOpen
@@ -187,6 +188,13 @@ fun FileSystemBrowserScreen(path: String? = null) {
 
   // Use standalone local states instead of CompositionLocal to avoid scroll issues with predictive back gesture
   val listState = remember { LazyListState() }
+
+  val sortType by browserPreferences.folderSortType.collectAsState()
+  val sortOrder by browserPreferences.folderSortOrder.collectAsState()
+
+  LaunchedEffect(sortType.name, sortOrder.name) {
+    listState.scrollToItem(0)
+  }
   
   // UI state
   val isRefreshing = remember { mutableStateOf(false) }
@@ -698,6 +706,12 @@ fun FileSystemBrowserScreen(path: String? = null) {
               folderSelectionManager.clear()
               videoSelectionManager.clear()
             },
+            onBlacklistClick = if (folderSelectionManager.isInSelectionMode && !videoSelectionManager.isInSelectionMode) {
+              {
+                viewModel.blacklistFolders(folderSelectionManager.getSelectedItems())
+                folderSelectionManager.clear()
+              }
+            } else null,
             onAddToPlaylistClick = if (!BuildConfig.ENABLE_UPDATE_FEATURE && videoSelectionManager.isInSelectionMode && !folderSelectionManager.isInSelectionMode) {
               { addToPlaylistDialogOpen.value = true }
             } else null,
