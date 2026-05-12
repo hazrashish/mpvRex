@@ -1,6 +1,7 @@
 package app.marlboroadvance.mpvex.ui.player.controls
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -23,7 +25,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -152,117 +153,6 @@ fun TopPlayerControlsPortrait(
 }
 
 @Composable
-fun PortraitControlsGrid(
-  buttons: List<PlayerButton>,
-  chapters: List<Segment>,
-  currentChapter: Int?,
-  isSpeedNonOne: Boolean,
-  currentZoom: Float,
-  aspect: VideoAspect,
-  mediaTitle: String?,
-  hideBackground: Boolean,
-  decoder: app.marlboroadvance.mpvex.ui.player.Decoder,
-  playbackSpeed: Float,
-  onBackPress: () -> Unit,
-  onOpenSheet: (Sheets) -> Unit,
-  onOpenPanel: (Panels) -> Unit,
-  viewModel: PlayerViewModel,
-  activity: PlayerActivity,
-  gridColumns: Int,
-  modifier: Modifier = Modifier,
-) {
-  val spacing = MaterialTheme.spacing
-
-  Column(
-    modifier = modifier.fillMaxWidth(),
-    verticalArrangement = Arrangement.spacedBy(spacing.smaller)
-  ) {
-    buttons.chunked(gridColumns).forEach { rowButtons ->
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        rowButtons.forEach { button ->
-          Box(
-            modifier = Modifier.weight(1f),
-            contentAlignment = Alignment.Center
-          ) {
-            RenderPlayerButton(
-              button = button,
-              chapters = chapters,
-              currentChapter = currentChapter,
-              isPortrait = true,
-              isSpeedNonOne = isSpeedNonOne,
-              currentZoom = currentZoom,
-              aspect = aspect,
-              mediaTitle = mediaTitle,
-              hideBackground = hideBackground,
-              onBackPress = onBackPress,
-              onOpenSheet = onOpenSheet,
-              onOpenPanel = onOpenPanel,
-              viewModel = viewModel,
-              activity = activity,
-              decoder = decoder,
-              playbackSpeed = playbackSpeed,
-              buttonSize = 40.dp,
-            )
-          }
-        }
-
-        // Fill the remaining space in the last row to keep columns aligned
-        val remaining = gridColumns - rowButtons.size
-        if (remaining > 0) {
-          repeat(remaining) {
-            Spacer(modifier = Modifier.weight(1f))
-          }
-        }
-      }
-    }
-  }
-}
-
-@Composable
-fun TopPlayerControlsGridPortrait(
-  buttons: List<PlayerButton>,
-  chapters: List<Segment>,
-  currentChapter: Int?,
-  isSpeedNonOne: Boolean,
-  currentZoom: Float,
-  aspect: VideoAspect,
-  mediaTitle: String?,
-  hideBackground: Boolean,
-  decoder: app.marlboroadvance.mpvex.ui.player.Decoder,
-  playbackSpeed: Float,
-  onBackPress: () -> Unit,
-  onOpenSheet: (Sheets) -> Unit,
-  onOpenPanel: (Panels) -> Unit,
-  viewModel: PlayerViewModel,
-  activity: PlayerActivity,
-  gridColumns: Int,
-) {
-  PortraitControlsGrid(
-    buttons = buttons,
-    chapters = chapters,
-    currentChapter = currentChapter,
-    isSpeedNonOne = isSpeedNonOne,
-    currentZoom = currentZoom,
-    aspect = aspect,
-    mediaTitle = mediaTitle,
-    hideBackground = hideBackground,
-    decoder = decoder,
-    playbackSpeed = playbackSpeed,
-    onBackPress = onBackPress,
-    onOpenSheet = onOpenSheet,
-    onOpenPanel = onOpenPanel,
-    viewModel = viewModel,
-    activity = activity,
-    gridColumns = gridColumns,
-    modifier = Modifier.padding(top = MaterialTheme.spacing.smaller)
-  )
-}
-
-@Composable
 fun BottomPlayerControlsPortrait(
   buttons: List<PlayerButton>,
   chapters: List<Segment>,
@@ -279,25 +169,57 @@ fun BottomPlayerControlsPortrait(
   onOpenPanel: (Panels) -> Unit,
   viewModel: PlayerViewModel,
   activity: PlayerActivity,
-  gridColumns: Int,
 ) {
-  PortraitControlsGrid(
-    buttons = buttons,
-    chapters = chapters,
-    currentChapter = currentChapter,
-    isSpeedNonOne = isSpeedNonOne,
-    currentZoom = currentZoom,
-    aspect = aspect,
-    mediaTitle = mediaTitle,
-    hideBackground = hideBackground,
-    decoder = decoder,
-    playbackSpeed = playbackSpeed,
-    onBackPress = onBackPress,
-    onOpenSheet = onOpenSheet,
-    onOpenPanel = onOpenPanel,
-    viewModel = viewModel,
-    activity = activity,
-    gridColumns = gridColumns,
-  )
-}
+  val scrollState = rememberScrollState()
+  val clickEvent = LocalPlayerButtonsClickEvent.current
+  val spacing = MaterialTheme.spacing
 
+  androidx.compose.runtime.LaunchedEffect(scrollState.isScrollInProgress) {
+    if (scrollState.isScrollInProgress) {
+      while (scrollState.isScrollInProgress) {
+        clickEvent()
+        kotlinx.coroutines.delay(1000)
+      }
+    }
+  }
+
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(bottom = spacing.medium)
+      .height(48.dp)
+      .horizontalScroll(scrollState),
+    horizontalArrangement = Arrangement.Start,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    // Start padding
+    Spacer(modifier = Modifier.width(spacing.medium))
+
+    ControlsGroup {
+      buttons.forEach { button ->
+        RenderPlayerButton(
+          button = button,
+          chapters = chapters,
+          currentChapter = currentChapter,
+          isPortrait = true,
+          isSpeedNonOne = isSpeedNonOne,
+          currentZoom = currentZoom,
+          aspect = aspect,
+          mediaTitle = mediaTitle,
+          hideBackground = hideBackground,
+          onBackPress = onBackPress,
+          onOpenSheet = onOpenSheet,
+          onOpenPanel = onOpenPanel,
+          viewModel = viewModel,
+          activity = activity,
+          decoder = decoder,
+          playbackSpeed = playbackSpeed,
+          buttonSize = 40.dp,
+        )
+      }
+    }
+
+    // End padding
+    Spacer(modifier = Modifier.width(spacing.medium))
+  }
+}
