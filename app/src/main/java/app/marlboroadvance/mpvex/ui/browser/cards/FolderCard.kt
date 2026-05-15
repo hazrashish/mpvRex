@@ -51,6 +51,7 @@ fun FolderCard(
   modifier: Modifier = Modifier,
   isRecentlyPlayed: Boolean = false,
   isNeverPlayed: Boolean = false,
+  isWatched: Boolean = false,
   onLongClick: (() -> Unit)? = null,
   isSelected: Boolean = false,
   onThumbClick: (() -> Unit)? = null,
@@ -91,11 +92,12 @@ fun FolderCard(
     isSelected = isSelected,
     isRecentlyPlayed = isRecentlyPlayed,
     isNeverPlayed = isNeverPlayed,
+    isWatched = isWatched,
     isGridMode = isGridMode,
     gridColumns = gridColumns,
     maxTitleLines = maxLines,
     overlayContent = {
-      if (newVideoCount > 0) {
+      if (uiSettings.showUnplayedOldVideoLabel && newVideoCount > 0) {
         Box(
           modifier = Modifier
             .align(Alignment.TopEnd)

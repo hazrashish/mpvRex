@@ -73,6 +73,7 @@ class PlayerPreferences(
   val autoPiPOnNavigation = preferenceStore.getBoolean("auto_pip_on_navigation", false)
 
   val keepScreenOnWhenPaused = preferenceStore.getBoolean("keep_screen_on_when_paused", false)
+  val resumeOnUnlock = preferenceStore.getBoolean("resume_on_unlock", false)
 
   // Persist aspect ratio setting (default to Fit)
   val defaultVideoAspect = preferenceStore.getEnum("default_video_aspect", VideoAspect.Fit)
@@ -88,5 +89,7 @@ class PlayerPreferences(
 
   // Ambience Mode
   val isAmbientEnabled = preferenceStore.getBoolean("ambient_enabled", false)
-  
+
+  // External media controls
+  val disableMediaButtons = preferenceStore.getBoolean("disable_media_buttons", false)
 }

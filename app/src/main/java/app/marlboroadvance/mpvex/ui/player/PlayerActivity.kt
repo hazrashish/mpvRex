@@ -198,11 +198,11 @@ class PlayerActivity :
   private var isReady = false // Single flag: true when video loaded and ready
   private var isOrientationRestored = false // Track if orientation was restored from DB
   private var isUserFinishing = false
+  private var wasInPipMode = false // Track if activity was in PiP mode
   private var isManualBackgroundPlayback = false // Track manual background playback trigger
   private var noisyReceiverRegistered = false
   private var mpvInitialized = false // Track MPV initialization state
   private var savePlaybackStateJob: kotlinx.coroutines.Job? = null // Track ongoing save job
-  private var wasPlayingBeforePause = false // Track if video was playing before pause
   private var pendingIntentExtras = false // Track if intent extras should be applied to next loaded file
   private var lastVid = -1 // Track video track for background playback optimization
   private var isInBackgroundPlayback = false // Track if we are currently in background playback mode
@@ -324,6 +324,7 @@ class PlayerActivity :
     setupPlayerControls()
     setupPipHelper()
     setupMediaSession()
+    viewModel.setupScreenStateReceiver()
 
     val playlistId = intent.getIntExtra("playlist_id", -1).takeIf { it != -1 }
     val playlistIndex = intent.getIntExtra("playlist_index", 0)
@@ -700,15 +701,17 @@ class PlayerActivity :
 
   @RequiresApi(Build.VERSION_CODES.P)
   override fun onPause() {
+    viewModel.isActivityResumed = false
     runCatching {
       val isInPip = isInPictureInPictureMode
       val isInMultiWindow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInMultiWindowMode else false
+      val isEnding = isUserFinishing || isFinishing
       val shouldPause = (!audioPreferences.automaticBackgroundPlayback.get() && !isManualBackgroundPlayback) || 
-                        (isUserFinishing && !isManualBackgroundPlayback)
+                        (isEnding && !isManualBackgroundPlayback)
 
       if (!isInPip && !isInMultiWindow) {
         if (shouldPause) {
-          wasPlayingBeforePause = !(viewModel.paused ?: true)
+          viewModel.wasPlayingBeforePause = !(viewModel.paused ?: true)
           viewModel.pause()
         } else {
           // Background playback is active - disable video decoding to save battery
@@ -779,6 +782,7 @@ class PlayerActivity :
   }
 
   override fun onStop() {
+    viewModel.isActivityStarted = false
     runCatching {
       pipHelper.onStop()
       saveVideoPlaybackState(fileName)
@@ -789,13 +793,19 @@ class PlayerActivity :
       }
 
       // Handle background playback based on preferences
-      val shouldAllowBackgroundPlayback = isManualBackgroundPlayback || 
-                                          audioPreferences.automaticBackgroundPlayback.get()
+      val isEnding = isUserFinishing || isFinishing
+      val isPipDismissed = wasInPipMode && !isChangingConfigurations
       
-      // Pause playback if background playback is not enabled and user is finishing
-      if (!shouldAllowBackgroundPlayback && (isUserFinishing || isFinishing)) {
+      val shouldAllowBackgroundPlayback = isManualBackgroundPlayback || 
+                                          (audioPreferences.automaticBackgroundPlayback.get() && !isEnding && !isPipDismissed)
+      
+      if (!shouldAllowBackgroundPlayback) {
         viewModel.pause()
-      } else if (shouldAllowBackgroundPlayback && !isInBackgroundPlayback) {
+        if (isPipDismissed) {
+          endBackgroundPlayback()
+          finish()
+        }
+      } else if (!isInBackgroundPlayback) {
         // Ensure video is disabled when hidden, even if it wasn't handled in onPause (e.g. multi-window)
         disableVideoForBackground()
       }
@@ -809,6 +819,7 @@ class PlayerActivity :
   @RequiresApi(Build.VERSION_CODES.P)
   override fun onStart() {
     super.onStart()
+    viewModel.isActivityStarted = true
 
     runCatching {
       setupWindowFlags()
@@ -1280,7 +1291,9 @@ class PlayerActivity :
 
   override fun onResume() {
     super.onResume()
+    viewModel.isActivityResumed = true
     updateVolume()
+    viewModel.handlePendingResumeOnUnlock()
   }
 
   /**
@@ -2286,10 +2299,16 @@ class PlayerActivity :
           oldState?.lastPosition ?: 0
         } else {
           // If we've reached the threshold or are within 1 second of the end, restart from beginning
-          if (progress < (watchedThreshold / 100f) && currentPos < currentDuration - 1) {
-            currentPos
+          // Only do this if we have a valid duration to avoid accidental "watched" status
+          if (currentDuration > 0) {
+            if (progress < (watchedThreshold / 100f) && currentPos < currentDuration - 1) {
+              currentPos
+            } else {
+              0
+            }
           } else {
-            0
+            // If duration is not yet available, preserve old position or use current (0)
+            oldState?.lastPosition ?: currentPos
           }
         }
 
@@ -2558,6 +2577,7 @@ class PlayerActivity :
   ) {
     super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
 
+    wasInPipMode = isInPictureInPictureMode
     pipHelper.onPictureInPictureModeChanged(isInPictureInPictureMode)
 
     binding.controls.alpha = if (isInPictureInPictureMode) 0f else 1f
@@ -2766,18 +2786,32 @@ class PlayerActivity :
       }
 
       KeyEvent.KEYCODE_MEDIA_STOP -> {
+        if (playerPreferences.disableMediaButtons.get()) return true
         finishAndRemoveTask()
         return true
       }
 
       KeyEvent.KEYCODE_MEDIA_REWIND -> {
+        if (playerPreferences.disableMediaButtons.get()) return true
         viewModel.handleLeftDoubleTap()
         return true
       }
 
       KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+        if (playerPreferences.disableMediaButtons.get()) return true
         viewModel.handleRightDoubleTap()
         return true
+      }
+
+      KeyEvent.KEYCODE_MEDIA_PLAY,
+      KeyEvent.KEYCODE_MEDIA_PAUSE,
+      KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+      KeyEvent.KEYCODE_MEDIA_NEXT,
+      KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+        if (playerPreferences.disableMediaButtons.get()) return true
+        
+        event?.let { player.onKey(it) }
+        return super.onKeyDown(keyCode, event)
       }
 
       else -> {
@@ -2823,25 +2857,32 @@ class PlayerActivity :
         MediaSession(this, TAG).apply {
           setCallback(
             object : MediaSession.Callback() {
+              private fun canHandle() = !playerPreferences.disableMediaButtons.get()
+
               override fun onPlay() {
+                if (!canHandle()) return
                 viewModel.unpause()
                 updateMediaSessionPlaybackState(isPlaying = true)
               }
 
               override fun onPause() {
+                if (!canHandle()) return
                 viewModel.pause()
                 updateMediaSessionPlaybackState(isPlaying = false)
               }
 
               override fun onSkipToNext() {
+                if (!canHandle()) return
                 viewModel.handleMediaNext()
               }
 
               override fun onSkipToPrevious() {
+                if (!canHandle()) return
                 viewModel.handleMediaPrevious()
               }
 
               override fun onSeekTo(pos: Long) {
+                if (!canHandle()) return
                 viewModel.seekTo((pos / 1000).toInt())
                 updateMediaSessionPlaybackState(isPlaying = viewModel.paused == false)
               }

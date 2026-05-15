@@ -106,6 +106,9 @@
     <string name="pref_autoplay_next_video_summary">Automatically play next video when current ends</string>
     <string name="pref_auto_pip_title">Auto Picture-in-Picture</string>
     <string name="pref_auto_pip_summary">Automatically enter PIP mode when pressing home or back</string>
+    <string name="pref_player_resume_on_unlock_title">Resume on unlock</string>
+    <string name="pref_player_resume_on_unlock_summary_on">Resume video automatically after unlocking if it was playing before the screen locked</string>
+    <string name="pref_player_resume_on_unlock_summary_off">Keep video paused after the screen is unlocked</string>
     <string name="pref_dynamic_speed_overlay_title">Dynamic Speed Overlay</string>
     <string name="pref_dynamic_speed_overlay_summary">Show advance overlay for speed control during long press and swipe</string>
     <string name="pref_show_navigation_bar_title">Show navigation bar with controls</string>
@@ -174,6 +177,8 @@
     <string name="pref_player_gestures_hold_for_multiple_speed">Hold for multi - x speed</string>
 
     <string name="pref_player_controls">Controls</string>
+    <string name="pref_player_controls_disable_media_buttons_title">Disable media buttons</string>
+    <string name="pref_player_controls_disable_media_buttons_summary">Ignore playback commands from headset and Bluetooth devices, etc</string>
     <string name="pref_player_controls_allow_gestures_in_panels">Allow gestures in panels</string>
     <string name="pref_player_controls_display_volume_as_percentage">Display volume as percentage</string>
     <string name="pref_player_controls_show_loading_circle">Show loading circle</string>
@@ -258,6 +263,11 @@
     <string name="pref_subtitles_searching">Searching…</string>
     <string name="pref_subtitles_found">%d subtitles found</string>
     <string name="pref_subtitles_online_search_title">Online Subtitle Search</string>
+    <string name="pref_subtitles_wyzie_api_key_title">Wyzie API Key</string>
+    <string name="pref_subtitles_wyzie_api_key_summary">Required for subtitle searches. Get yours at sub.wyzie.io/redeem</string>
+    <string name="pref_subtitles_wyzie_api_key_hint">Enter API Key</string>
+    <string name="pref_subtitles_wyzie_api_key_not_set">Not set</string>
+    <string name="pref_subtitles_wyzie_api_key_masked">••••••••••••••••••••••</string>
 
     <string name="pref_audio">Audio</string>
     <string name="pref_audio_summary">Preferred languages, audio channels, pitch correction</string>
