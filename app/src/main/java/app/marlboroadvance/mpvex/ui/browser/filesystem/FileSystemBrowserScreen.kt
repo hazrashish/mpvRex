@@ -2,7 +2,9 @@ package app.marlboroadvance.mpvex.ui.browser.filesystem
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
+import java.io.File
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.ViewModule
@@ -97,6 +100,7 @@ import app.marlboroadvance.mpvex.ui.browser.cards.FolderCard
 import app.marlboroadvance.mpvex.ui.browser.cards.VideoCard
 import app.marlboroadvance.mpvex.ui.browser.components.BrowserBottomBar
 import app.marlboroadvance.mpvex.ui.browser.components.BrowserTopBar
+import app.marlboroadvance.mpvex.ui.browser.components.SelectionOverflowAction
 import app.marlboroadvance.mpvex.ui.browser.dialogs.AddToPlaylistDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.DeleteConfirmationDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.FileOperationProgressDialog
@@ -107,9 +111,12 @@ import app.marlboroadvance.mpvex.ui.browser.dialogs.ViewModeSelector
 import app.marlboroadvance.mpvex.ui.browser.dialogs.MultiViewModeSelector
 import app.marlboroadvance.mpvex.ui.browser.dialogs.ViewModeOption
 import androidx.compose.material.icons.filled.VideoLibrary
+import app.marlboroadvance.mpvex.ui.browser.dialogs.ContentToggle
 import app.marlboroadvance.mpvex.ui.browser.dialogs.VisibilityToggle
 import app.marlboroadvance.mpvex.ui.browser.selection.rememberSelectionManager
+import app.marlboroadvance.mpvex.ui.browser.sheets.MarkAsBottomSheet
 import app.marlboroadvance.mpvex.ui.browser.sheets.PlayLinkSheet
+import app.marlboroadvance.mpvex.utils.history.RecentlyPlayedOps
 import app.marlboroadvance.mpvex.ui.browser.states.EmptyState
 import app.marlboroadvance.mpvex.ui.browser.states.PermissionDeniedState
 import app.marlboroadvance.mpvex.ui.utils.LocalBackStack
@@ -250,6 +257,9 @@ fun FileSystemBrowserScreen(path: String? = null) {
   val isFabExpanded = remember { mutableStateOf(false) }
   
   // Search state
+  var mediaInfoUri by remember { mutableStateOf<Uri?>(null) }
+  var multiSelectionInfo by remember { mutableStateOf<Triple<Int, Long, Long>?>(null) }
+  var multiSelectionUnit by remember { mutableStateOf("file") }
   var searchQuery by rememberSaveable { mutableStateOf("") }
   var isSearching by rememberSaveable { mutableStateOf(false) }
   var searchResults by remember { mutableStateOf<List<FileSystemItem>>(emptyList()) }
@@ -268,7 +278,7 @@ fun FileSystemBrowserScreen(path: String? = null) {
 
   // Bottom bar visibility state
   var showFloatingBottomBar by remember { mutableStateOf(false) }
-  var showBottomNavigation by remember { mutableStateOf(true) }
+  var showMarkAsSheet by remember { mutableStateOf(false) }
 
   // Animation duration for responsive slide animations
   val animationDuration = 200
@@ -304,21 +314,9 @@ fun FileSystemBrowserScreen(path: String? = null) {
   val totalCount = folders.size + videos.size
   val isMixedSelection = folderSelectionManager.isInSelectionMode && videoSelectionManager.isInSelectionMode
 
-  // Update bottom bar visibility with optimized animation sequencing
-  LaunchedEffect(isInSelectionMode, videoSelectionManager.isInSelectionMode, isMixedSelection) {
-    // Show floating bar and hide bottom navigation when appropriate.
-    // Play Store gating is intentionally bypassed here.
-    val shouldShowFloatingBar = isInSelectionMode && videoSelectionManager.isInSelectionMode && !isMixedSelection
-    
-    if (shouldShowFloatingBar) {
-      // Entering selection mode: Hide bottom navigation immediately, then show floating bar
-      showBottomNavigation = false
-      showFloatingBottomBar = true
-    } else {
-      // Exiting selection mode: Hide floating bar and show bottom navigation immediately for better responsiveness
-      showFloatingBottomBar = false
-      showBottomNavigation = true
-    }
+  // Show/hide floating bar based on selection state
+  LaunchedEffect(isInSelectionMode) {
+    showFloatingBottomBar = isInSelectionMode
   }
 
   // Permissions
@@ -326,21 +324,12 @@ fun FileSystemBrowserScreen(path: String? = null) {
     onPermissionGranted = { viewModel.refresh() },
   )
 
-  // Combined MainScreen updates for better performance and responsiveness
-  LaunchedEffect(
-    showBottomNavigation, 
-    isInSelectionMode, 
-    isMixedSelection, 
-    videoSelectionManager.isInSelectionMode,
-    permissionState.status
-  ) {
+  // Sync selection state to MainScreen (bottom nav stays visible — floating bar floats above it)
+  LaunchedEffect(isInSelectionMode, isMixedSelection, videoSelectionManager.isInSelectionMode, permissionState.status) {
     if (isAtRoot) {
       try {
         val mainScreenObj = app.marlboroadvance.mpvex.ui.browser.MainScreen
         val onlyVideosSelected = videoSelectionManager.isInSelectionMode && !folderSelectionManager.isInSelectionMode
-
-        // Update all MainScreen states in one call to reduce overhead
-        mainScreenObj.updateBottomBarVisibility(showBottomNavigation)
         mainScreenObj.updateSelectionState(
           isInSelectionMode = isInSelectionMode,
           isOnlyVideosSelected = onlyVideosSelected,
@@ -351,21 +340,6 @@ fun FileSystemBrowserScreen(path: String? = null) {
         )
       } catch (e: Exception) {
         Log.e("FileSystemBrowserScreen", "Failed to update MainScreen state", e)
-      }
-    }
-  }
-
-  // Cleanup: Restore bottom navigation bar when leaving the screen
-  DisposableEffect(Unit) {
-    onDispose {
-      if (isAtRoot) {
-        try {
-          val mainScreenObj = app.marlboroadvance.mpvex.ui.browser.MainScreen
-          // Restore bottom navigation when leaving the screen
-          mainScreenObj.updateBottomBarVisibility(true)
-        } catch (e: Exception) {
-          Log.e("FileSystemBrowserScreen", "Failed to restore MainScreen bottom bar visibility", e)
-        }
       }
     }
   }
@@ -389,9 +363,7 @@ fun FileSystemBrowserScreen(path: String? = null) {
   val treePickerLauncher = rememberLauncherForActivityResult(
     contract = OpenDocumentTreeContract(),
   ) { uri ->
-    if (uri == null) return@rememberLauncherForActivityResult
-    val selectedVideos = videoSelectionManager.getSelectedItems()
-    if (selectedVideos.isEmpty() || operationType.value == null) return@rememberLauncherForActivityResult
+    if (uri == null || operationType.value == null) return@rememberLauncherForActivityResult
 
     runCatching {
       context.contentResolver.takePersistableUriPermission(
@@ -402,16 +374,25 @@ fun FileSystemBrowserScreen(path: String? = null) {
 
     progressDialogOpen.value = true
     coroutineScope.launch {
-      when (operationType.value) {
-        is CopyPasteOps.OperationType.Copy -> {
-          CopyPasteOps.copyFilesToTreeUri(context, selectedVideos, uri)
+      if (folderSelectionManager.isInSelectionMode) {
+        val selectedVideos = folderSelectionManager.getSelectedItems()
+          .flatMap { collectVideosRecursively(context, it.path) }
+        if (selectedVideos.isNotEmpty()) {
+          when (operationType.value) {
+            is CopyPasteOps.OperationType.Copy -> CopyPasteOps.copyFilesToTreeUri(context, selectedVideos, uri)
+            is CopyPasteOps.OperationType.Move -> CopyPasteOps.moveFilesToTreeUri(context, selectedVideos, uri)
+            else -> {}
+          }
         }
-
-        is CopyPasteOps.OperationType.Move -> {
-          CopyPasteOps.moveFilesToTreeUri(context, selectedVideos, uri)
+      } else {
+        val selectedVideos = videoSelectionManager.getSelectedItems()
+        if (selectedVideos.isNotEmpty()) {
+          when (operationType.value) {
+            is CopyPasteOps.OperationType.Copy -> CopyPasteOps.copyFilesToTreeUri(context, selectedVideos, uri)
+            is CopyPasteOps.OperationType.Move -> CopyPasteOps.moveFilesToTreeUri(context, selectedVideos, uri)
+            else -> {}
+          }
         }
-
-        else -> {}
       }
     }
   }
@@ -638,57 +619,46 @@ fun FileSystemBrowserScreen(path: String? = null) {
               null
             },
             isSingleSelection = videoSelectionManager.isSingleSelection && !isMixedSelection,
-            onInfoClick = if (videoSelectionManager.isInSelectionMode && !folderSelectionManager.isInSelectionMode) {
-              {
-                val video = videoSelectionManager.getSelectedItems().firstOrNull()
-                if (video != null) {
-                  val intent = Intent(context, app.marlboroadvance.mpvex.ui.mediainfo.MediaInfoActivity::class.java)
-                  intent.action = Intent.ACTION_VIEW
-                  intent.data = video.uri
-                  context.startActivity(intent)
-                  videoSelectionManager.clear()
-                }
-              }
-            } else {
-              null
-            },
-            onShareClick = {
-              when {
-                // Mixed selection: share videos from both selected videos and selected folders
-                isMixedSelection -> {
-                  coroutineScope.launch {
-                    val selectedVideos = videoSelectionManager.getSelectedItems()
-                    val selectedFolders = folderSelectionManager.getSelectedItems()
-
-                    // Get all videos recursively from selected folders
-                    val videosFromFolders = selectedFolders.flatMap { folder ->
-                      collectVideosRecursively(context, folder.path)
-                    }
-
-                    // Combine and share all videos
-                    val allVideos = (selectedVideos + videosFromFolders).distinctBy { it.id }
-                    if (allVideos.isNotEmpty()) {
-                      MediaUtils.shareVideos(context, allVideos)
-                    }
+            onInfoClick = when {
+              videoSelectionManager.isInSelectionMode && !folderSelectionManager.isInSelectionMode -> {
+                {
+                  val selected = videoSelectionManager.getSelectedItems()
+                  if (videoSelectionManager.isSingleSelection) {
+                    mediaInfoUri = selected.firstOrNull()?.uri
+                  } else {
+                    multiSelectionUnit = "file"
+                    multiSelectionInfo = Triple(
+                      selected.size,
+                      selected.sumOf { it.size },
+                      selected.sumOf { it.duration },
+                    )
                   }
                 }
-                // Folders only: share all videos from selected folders
-                folderSelectionManager.isInSelectionMode -> {
-                  coroutineScope.launch {
-                    val selectedFolders = folderSelectionManager.getSelectedItems()
-                    val videosFromFolders = selectedFolders.flatMap { folder ->
-                      collectVideosRecursively(context, folder.path)
-                    }
-                    if (videosFromFolders.isNotEmpty()) {
-                      MediaUtils.shareVideos(context, videosFromFolders)
-                    }
-                  }
-                }
-                // Videos only: use existing functionality
-                videoSelectionManager.isInSelectionMode -> {
-                  videoSelectionManager.shareSelected()
+              }
+              folderSelectionManager.isInSelectionMode && !videoSelectionManager.isInSelectionMode -> {
+                {
+                  val selected = folderSelectionManager.getSelectedItems()
+                  multiSelectionUnit = "folder"
+                  multiSelectionInfo = Triple(
+                    selected.size,
+                    selected.sumOf { it.totalSize },
+                    selected.sumOf { it.totalDuration },
+                  )
                 }
               }
+              isMixedSelection -> {
+                {
+                  val selectedVideos = videoSelectionManager.getSelectedItems()
+                  val selectedFolders = folderSelectionManager.getSelectedItems()
+                  multiSelectionUnit = "item"
+                  multiSelectionInfo = Triple(
+                    selectedVideos.size + selectedFolders.size,
+                    selectedVideos.sumOf { it.size } + selectedFolders.sumOf { it.totalSize },
+                    selectedVideos.sumOf { it.duration } + selectedFolders.sumOf { it.totalDuration },
+                  )
+                }
+              }
+              else -> null
             },
             onPlayClick = {
               when {
@@ -747,12 +717,50 @@ fun FileSystemBrowserScreen(path: String? = null) {
               folderSelectionManager.clear()
               videoSelectionManager.clear()
             },
-            onBlacklistClick = if (folderSelectionManager.isInSelectionMode && !videoSelectionManager.isInSelectionMode) {
-              {
-                viewModel.blacklistFolders(folderSelectionManager.getSelectedItems())
-                folderSelectionManager.clear()
+            deleteInOverflow = folderSelectionManager.isInSelectionMode,
+            selectionOverflowActions = buildList {
+              add(SelectionOverflowAction(
+                icon = Icons.Filled.Share,
+                label = "Share",
+                onClick = {
+                  when {
+                    isMixedSelection -> {
+                      coroutineScope.launch {
+                        val selectedVideos = videoSelectionManager.getSelectedItems()
+                        val selectedFolders = folderSelectionManager.getSelectedItems()
+                        val videosFromFolders = selectedFolders.flatMap { folder ->
+                          collectVideosRecursively(context, folder.path)
+                        }
+                        val allVideos = (selectedVideos + videosFromFolders).distinctBy { it.id }
+                        if (allVideos.isNotEmpty()) MediaUtils.shareVideos(context, allVideos)
+                      }
+                    }
+                    folderSelectionManager.isInSelectionMode -> {
+                      coroutineScope.launch {
+                        val selectedFolders = folderSelectionManager.getSelectedItems()
+                        val videosFromFolders = selectedFolders.flatMap { folder ->
+                          collectVideosRecursively(context, folder.path)
+                        }
+                        if (videosFromFolders.isNotEmpty()) MediaUtils.shareVideos(context, videosFromFolders)
+                      }
+                    }
+                    videoSelectionManager.isInSelectionMode -> {
+                      videoSelectionManager.shareSelected()
+                    }
+                  }
+                },
+              ))
+              if (folderSelectionManager.isInSelectionMode && !videoSelectionManager.isInSelectionMode) {
+                add(SelectionOverflowAction(
+                  icon = Icons.Filled.Block,
+                  label = "Blacklist",
+                  onClick = {
+                    viewModel.blacklistFolders(folderSelectionManager.getSelectedItems())
+                    folderSelectionManager.clear()
+                  },
+                ))
               }
-            } else null,
+            },
           )
         }
       },
@@ -959,8 +967,41 @@ fun FileSystemBrowserScreen(path: String? = null) {
         onRenameClick = { renameDialogOpen.value = true },
         onDeleteClick = { deleteDialogOpen.value = true },
         onAddToPlaylistClick = { addToPlaylistDialogOpen.value = true },
-        showRename = videoSelectionManager.isSingleSelection,
-        modifier = Modifier.padding(bottom = 0.dp) // Zero bottom padding - absolute bottom
+        onMarkAsClick = { showMarkAsSheet = true },
+        showRename = (videoSelectionManager.isSingleSelection || folderSelectionManager.isSingleSelection) && !isMixedSelection,
+        showAddToPlaylist = videoSelectionManager.isInSelectionMode && !isMixedSelection,
+        modifier = Modifier.padding(bottom = navigationBarHeight)
+      )
+    }
+
+    // Mark As Sheet
+    if (showMarkAsSheet) {
+      MarkAsBottomSheet(
+        onDismiss = { showMarkAsSheet = false },
+        onMarkAs = { state ->
+          coroutineScope.launch {
+            // Videos selected directly
+            videoSelectionManager.getSelectedItems().forEach { video ->
+              RecentlyPlayedOps.markAs(
+                filePath = video.path,
+                fileName = video.displayName,
+                duration = video.duration,
+                state = state,
+              )
+            }
+            // Folders selected — apply to all videos inside recursively
+            folderSelectionManager.getSelectedItems().forEach { folder ->
+              collectVideosRecursively(context, folder.path).forEach { video ->
+                RecentlyPlayedOps.markAs(
+                  filePath = video.path,
+                  fileName = video.displayName,
+                  duration = video.duration,
+                  state = state,
+                )
+              }
+            }
+          }
+        },
       )
     }
 
@@ -998,20 +1039,43 @@ fun FileSystemBrowserScreen(path: String? = null) {
         videoSelectionManager.getSelectedItems().map { it.displayName }),
     )
 
-    // Rename Dialog (only for videos)
-    if (renameDialogOpen.value && videoSelectionManager.isSingleSelection) {
-      val video = videoSelectionManager.getSelectedItems().firstOrNull()
-      if (video != null) {
-        val baseName = video.displayName.substringBeforeLast('.')
-        val extension = "." + video.displayName.substringAfterLast('.', "")
-        RenameDialog(
-          isOpen = true,
-          onDismiss = { renameDialogOpen.value = false },
-          onConfirm = { newName -> videoSelectionManager.renameSelected(newName) },
-          currentName = baseName,
-          itemType = "file",
-          extension = if (extension != ".") extension else null,
-        )
+    // Rename Dialog
+    if (renameDialogOpen.value) {
+      if (folderSelectionManager.isSingleSelection) {
+        val folder = folderSelectionManager.getSelectedItems().firstOrNull()
+        if (folder != null) {
+          RenameDialog(
+            isOpen = true,
+            onDismiss = { renameDialogOpen.value = false },
+            onConfirm = { newName ->
+              renameDialogOpen.value = false
+              coroutineScope.launch {
+                val ok = viewModel.renameFolder(folder, newName)
+                if (!ok) {
+                  android.widget.Toast.makeText(context, "Rename failed", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                folderSelectionManager.clear()
+                viewModel.refresh()
+              }
+            },
+            currentName = folder.name,
+            itemType = "folder",
+          )
+        }
+      } else if (videoSelectionManager.isSingleSelection) {
+        val video = videoSelectionManager.getSelectedItems().firstOrNull()
+        if (video != null) {
+          val baseName = video.displayName.substringBeforeLast('.')
+          val extension = "." + video.displayName.substringAfterLast('.', "")
+          RenameDialog(
+            isOpen = true,
+            onDismiss = { renameDialogOpen.value = false },
+            onConfirm = { newName -> videoSelectionManager.renameSelected(newName) },
+            currentName = baseName,
+            itemType = "file",
+            extension = if (extension != ".") extension else null,
+          )
+        }
       }
     }
 
@@ -1022,20 +1086,57 @@ fun FileSystemBrowserScreen(path: String? = null) {
       onDismiss = { folderPickerOpen.value = false },
       onFolderSelected = { destinationPath ->
         folderPickerOpen.value = false
-        val selectedVideos = videoSelectionManager.getSelectedItems()
-        if (selectedVideos.isNotEmpty() && operationType.value != null) {
-          progressDialogOpen.value = true
+        val op = operationType.value
+        if (op != null) {
           coroutineScope.launch {
-            when (operationType.value) {
-              is CopyPasteOps.OperationType.Copy -> {
-                CopyPasteOps.copyFiles(context, selectedVideos, destinationPath)
+            if (folderSelectionManager.isInSelectionMode) {
+              val selectedFolders = folderSelectionManager.getSelectedItems()
+              if (selectedFolders.isNotEmpty()) {
+                when (op) {
+                  is CopyPasteOps.OperationType.Move -> {
+                    val needFallback = mutableListOf<FileSystemItem.Folder>()
+                    for (folder in selectedFolders) {
+                      val dst = File(destinationPath, folder.name)
+                      if (!File(folder.path).renameTo(dst)) needFallback.add(folder)
+                    }
+                    if (needFallback.isNotEmpty()) {
+                      progressDialogOpen.value = true
+                      for (folder in needFallback) {
+                        val videos = collectVideosRecursively(context, folder.path)
+                        if (videos.isNotEmpty()) {
+                          val subDest = File(destinationPath, folder.name).also { it.mkdirs() }.absolutePath
+                          CopyPasteOps.moveFiles(context, videos, subDest)
+                        }
+                      }
+                    } else {
+                      viewModel.setItemsWereDeletedOrMoved()
+                      folderSelectionManager.clear()
+                      viewModel.refresh()
+                    }
+                  }
+                  is CopyPasteOps.OperationType.Copy -> {
+                    progressDialogOpen.value = true
+                    for (folder in selectedFolders) {
+                      val videos = collectVideosRecursively(context, folder.path)
+                      if (videos.isNotEmpty()) {
+                        val subDest = File(destinationPath, folder.name).also { it.mkdirs() }.absolutePath
+                        CopyPasteOps.copyFiles(context, videos, subDest)
+                      }
+                    }
+                  }
+                  else -> {}
+                }
               }
-
-              is CopyPasteOps.OperationType.Move -> {
-                CopyPasteOps.moveFiles(context, selectedVideos, destinationPath)
+            } else {
+              val selectedVideos = videoSelectionManager.getSelectedItems()
+              if (selectedVideos.isNotEmpty()) {
+                progressDialogOpen.value = true
+                when (op) {
+                  is CopyPasteOps.OperationType.Copy -> CopyPasteOps.copyFiles(context, selectedVideos, destinationPath)
+                  is CopyPasteOps.OperationType.Move -> CopyPasteOps.moveFiles(context, selectedVideos, destinationPath)
+                  else -> {}
+                }
               }
-
-              else -> {}
             }
           }
         }
@@ -1061,6 +1162,7 @@ fun FileSystemBrowserScreen(path: String? = null) {
           }
           operationType.value = null
           videoSelectionManager.clear()
+          folderSelectionManager.clear()
           viewModel.refresh()
         },
       )
@@ -1076,6 +1178,13 @@ fun FileSystemBrowserScreen(path: String? = null) {
         viewModel.refresh()
       },
     )
+
+    mediaInfoUri?.let { uri ->
+      app.marlboroadvance.mpvex.ui.browser.sheets.MediaInfoSheet(uri = uri, onDismiss = { mediaInfoUri = null })
+    }
+    multiSelectionInfo?.let { (count, bytes, duration) ->
+      app.marlboroadvance.mpvex.ui.browser.sheets.MultiSelectionInfoSheet(count = count, totalBytes = bytes, totalDurationMs = duration, onDismiss = { multiSelectionInfo = null }, unit = multiSelectionUnit)
+    }
   }
 }
 
@@ -1639,6 +1748,7 @@ fun FileSystemSortDialog(
   val showProgressBar by browserPreferences.showProgressBar.collectAsState()
   val showSubtitleIndicator by browserPreferences.showSubtitleIndicator.collectAsState()
   val unlimitedNameLines by appearancePreferences.unlimitedNameLines.collectAsState()
+  val showAudioFiles by browserPreferences.showAudioFiles.collectAsState()
 
   SortDialog(
     isOpen = isOpen,
@@ -1712,6 +1822,13 @@ fun FileSystemSortDialog(
     videoGridColumnSelector = null,
     enableViewModeOptions = isAtRoot,
     enableLayoutModeOptions = false, // Disabled/grayed out
+    contentToggles = listOf(
+      ContentToggle(
+        label = "Audio Files",
+        checked = showAudioFiles,
+        onCheckedChange = { browserPreferences.showAudioFiles.set(it) },
+      ),
+    ),
     visibilityToggles = listOf(
       VisibilityToggle(
         label = "Video Thumbnails",

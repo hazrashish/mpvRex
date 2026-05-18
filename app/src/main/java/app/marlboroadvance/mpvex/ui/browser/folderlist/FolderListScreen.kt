@@ -4,6 +4,10 @@ import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,8 +36,10 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -102,17 +108,27 @@ import app.marlboroadvance.mpvex.ui.browser.LocalNavigationBarHeight
 import app.marlboroadvance.mpvex.ui.browser.cards.FolderCard
 import app.marlboroadvance.mpvex.ui.browser.cards.VideoCard
 import app.marlboroadvance.mpvex.ui.browser.components.BrowserTopBar
+import app.marlboroadvance.mpvex.ui.browser.components.SelectionOverflowAction
 import app.marlboroadvance.mpvex.ui.browser.dialogs.DeleteConfirmationDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.GridColumnSelector
 import app.marlboroadvance.mpvex.ui.browser.dialogs.SortDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.ViewModeSelector
+import app.marlboroadvance.mpvex.ui.browser.dialogs.ContentToggle
 import app.marlboroadvance.mpvex.ui.browser.dialogs.VisibilityToggle
 import app.marlboroadvance.mpvex.ui.browser.medialibrary.MediaLibraryContent
 import app.marlboroadvance.mpvex.ui.browser.dialogs.MultiViewModeSelector
 import app.marlboroadvance.mpvex.ui.browser.dialogs.ViewModeOption
 import app.marlboroadvance.mpvex.ui.browser.filesystem.FileSystemDirectoryScreen
 import app.marlboroadvance.mpvex.ui.browser.filesystem.FileSystemBrowserRootScreen
+import app.marlboroadvance.mpvex.ui.browser.components.BrowserBottomBar
+import app.marlboroadvance.mpvex.ui.browser.dialogs.FileOperationProgressDialog
+import app.marlboroadvance.mpvex.ui.browser.dialogs.FolderPickerDialog
+import app.marlboroadvance.mpvex.ui.browser.dialogs.RenameDialog
 import app.marlboroadvance.mpvex.ui.browser.selection.rememberSelectionManager
+import app.marlboroadvance.mpvex.ui.browser.sheets.MarkAsBottomSheet
+import app.marlboroadvance.mpvex.utils.media.CopyPasteOps
+import app.marlboroadvance.mpvex.utils.media.OpenDocumentTreeContract
+import app.marlboroadvance.mpvex.ui.browser.sheets.MultiSelectionInfoSheet
 import app.marlboroadvance.mpvex.ui.browser.sheets.PlayLinkSheet
 import app.marlboroadvance.mpvex.ui.browser.states.EmptyState
 import app.marlboroadvance.mpvex.ui.browser.states.LoadingState
@@ -270,8 +286,15 @@ object FolderListScreen : Screen {
     val sortDialogOpen = rememberSaveable { mutableStateOf(false) }
     val deleteDialogOpen = rememberSaveable { mutableStateOf(false) }
     val showLinkDialog = remember { mutableStateOf(false) }
+    var showMarkAsSheet by remember { mutableStateOf(false) }
+    val folderPickerOpen = rememberSaveable { mutableStateOf(false) }
+    val operationType = remember { mutableStateOf<CopyPasteOps.OperationType?>(null) }
+    val progressDialogOpen = rememberSaveable { mutableStateOf(false) }
+    var renameDialogOpen by rememberSaveable { mutableStateOf(false) }
+    val operationProgress by CopyPasteOps.operationProgress.collectAsState()
 
     // Search state
+    var folderSelectionInfo by remember { mutableStateOf<Triple<Int, Long, Long>?>(null) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var isSearching by rememberSaveable { mutableStateOf(false) }
     var searchResults by remember { mutableStateOf<List<FileSystemItem>>(emptyList()) }
@@ -318,7 +341,7 @@ object FolderListScreen : Screen {
     }
 
     val filteredFolders = sortedFolders
-    
+
     // Selection manager
     val selectionManager = rememberSelectionManager(
       items = sortedFolders,
@@ -331,6 +354,32 @@ object FolderListScreen : Screen {
       },
       onOperationComplete = { viewModel.refresh() },
     )
+
+    val treePickerLauncher = rememberLauncherForActivityResult(
+      contract = OpenDocumentTreeContract(),
+    ) { uri ->
+      if (uri == null || operationType.value == null) return@rememberLauncherForActivityResult
+      runCatching {
+        context.contentResolver.takePersistableUriPermission(
+          uri,
+          Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+        )
+      }
+      progressDialogOpen.value = true
+      coroutineScope.launch {
+        val selectedFolders = selectionManager.getSelectedItems()
+        val selectedVideos = selectedFolders.flatMap { folder ->
+          MediaFileRepository.getVideosForBuckets(context, setOf(folder.bucketId))
+        }
+        if (selectedVideos.isNotEmpty()) {
+          when (operationType.value) {
+            is CopyPasteOps.OperationType.Copy -> CopyPasteOps.copyFilesToTreeUri(context, selectedVideos, uri)
+            is CopyPasteOps.OperationType.Move -> CopyPasteOps.moveFilesToTreeUri(context, selectedVideos, uri)
+            else -> {}
+          }
+        }
+      }
+    }
 
     // Permissions
     val permissionState = PermissionUtils.handleStoragePermission(
@@ -435,18 +484,16 @@ object FolderListScreen : Screen {
               backstack.add(app.marlboroadvance.mpvex.ui.preferences.PreferencesScreen)
             },
             onDeleteClick = { deleteDialogOpen.value = true },
+            deleteInOverflow = true,
             onRenameClick = null,
             isSingleSelection = selectionManager.isSingleSelection,
-            onInfoClick = null,
-            onShareClick = {
-              coroutineScope.launch {
-                val selectedIds = selectionManager.getSelectedItems().map { it.bucketId }.toSet()
-                val allVideos = app.marlboroadvance.mpvex.repository.MediaFileRepository
-                  .getVideosForBuckets(context, selectedIds)
-                if (allVideos.isNotEmpty()) {
-                  MediaUtils.shareVideos(context, allVideos)
-                }
-              }
+            onInfoClick = {
+              val selected = selectionManager.getSelectedItems()
+              folderSelectionInfo = Triple(
+                selected.size,
+                selected.sumOf { it.totalSize },
+                selected.sumOf { it.totalDuration },
+              )
             },
             onPlayClick = {
               coroutineScope.launch {
@@ -463,26 +510,44 @@ object FolderListScreen : Screen {
                 }
               }
             },
-            onBlacklistClick = {
-              coroutineScope.launch {
-                val selectedFolders = selectionManager.getSelectedItems()
-                val blacklistedFolders = foldersPreferences.blacklistedFolders.get().toMutableSet()
-                selectedFolders.forEach { folder ->
-                  blacklistedFolders.add(folder.path)
-                }
-                foldersPreferences.blacklistedFolders.set(blacklistedFolders)
-                selectionManager.clear()
-                viewModel.refresh()
-                android.widget.Toast.makeText(
-                  context,
-                  context.getString(app.marlboroadvance.mpvex.R.string.pref_folders_blacklisted),
-                  android.widget.Toast.LENGTH_SHORT,
-                ).show()
-              }
-            },
             onSelectAll = { selectionManager.selectAll() },
             onInvertSelection = { selectionManager.invertSelection() },
             onDeselectAll = { selectionManager.clear() },
+            selectionOverflowActions = listOf(
+              SelectionOverflowAction(
+                icon = Icons.Filled.Share,
+                label = "Share",
+                onClick = {
+                  coroutineScope.launch {
+                    val selectedIds = selectionManager.getSelectedItems().map { it.bucketId }.toSet()
+                    val allVideos = app.marlboroadvance.mpvex.repository.MediaFileRepository
+                      .getVideosForBuckets(context, selectedIds)
+                    if (allVideos.isNotEmpty()) {
+                      MediaUtils.shareVideos(context, allVideos)
+                    }
+                  }
+                },
+              ),
+              SelectionOverflowAction(
+                icon = Icons.Filled.Block,
+                label = "Blacklist",
+                onClick = {
+                  coroutineScope.launch {
+                    val selectedFolders = selectionManager.getSelectedItems()
+                    val blacklistedFolders = foldersPreferences.blacklistedFolders.get().toMutableSet()
+                    selectedFolders.forEach { folder -> blacklistedFolders.add(folder.path) }
+                    foldersPreferences.blacklistedFolders.set(blacklistedFolders)
+                    selectionManager.clear()
+                    viewModel.refresh()
+                    android.widget.Toast.makeText(
+                      context,
+                      context.getString(app.marlboroadvance.mpvex.R.string.pref_folders_blacklisted),
+                      android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                  }
+                },
+              ),
+            ),
           )
         }
       },
@@ -559,7 +624,7 @@ object FolderListScreen : Screen {
         }
       },
     ) { padding ->
-      Box(modifier = Modifier.padding(padding)) {
+      Box(modifier = Modifier.padding(padding).fillMaxSize()) {
         when (permissionState.status) {
           PermissionStatus.Granted -> {
             if (isSearching) {
@@ -662,6 +727,157 @@ object FolderListScreen : Screen {
         },
       )
 
+      Box(modifier = Modifier.fillMaxSize()) {
+        AnimatedVisibility(
+          visible = selectionManager.isInSelectionMode,
+          enter = slideInVertically(
+            animationSpec = tween(durationMillis = 200),
+            initialOffsetY = { fullHeight -> fullHeight },
+          ),
+          exit = slideOutVertically(
+            animationSpec = tween(durationMillis = 200),
+            targetOffsetY = { fullHeight -> fullHeight },
+          ),
+          modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+          BrowserBottomBar(
+            isSelectionMode = true,
+            onCopyClick = {
+              operationType.value = CopyPasteOps.OperationType.Copy
+              if (CopyPasteOps.canUseDirectFileOperations()) {
+                folderPickerOpen.value = true
+              } else {
+                treePickerLauncher.launch(null)
+              }
+            },
+            onMoveClick = {
+              operationType.value = CopyPasteOps.OperationType.Move
+              if (CopyPasteOps.canUseDirectFileOperations()) {
+                folderPickerOpen.value = true
+              } else {
+                treePickerLauncher.launch(null)
+              }
+            },
+            onRenameClick = { renameDialogOpen = true },
+            onDeleteClick = { deleteDialogOpen.value = true },
+            onAddToPlaylistClick = { },
+            showCopy = true,
+            showMove = true,
+            showRename = selectionManager.isSingleSelection,
+            showAddToPlaylist = false,
+            onMarkAsClick = { showMarkAsSheet = true },
+            modifier = Modifier.padding(bottom = navigationBarHeight),
+          )
+        }
+      }
+
+      if (showMarkAsSheet) {
+        MarkAsBottomSheet(
+          onDismiss = { showMarkAsSheet = false },
+          onMarkAs = { state ->
+            coroutineScope.launch {
+              val selectedIds = selectionManager.getSelectedItems().map { it.bucketId }.toSet()
+              val videos = MediaFileRepository.getVideosForBuckets(context, selectedIds)
+              videos.forEach { video ->
+                RecentlyPlayedOps.markAs(
+                  filePath = video.path,
+                  fileName = video.displayName,
+                  duration = video.duration,
+                  state = state,
+                )
+              }
+            }
+          },
+        )
+      }
+
+      FolderPickerDialog(
+        isOpen = folderPickerOpen.value,
+        onDismiss = { folderPickerOpen.value = false },
+        onFolderSelected = { destinationPath ->
+          folderPickerOpen.value = false
+          val op = operationType.value
+          if (op != null) {
+            coroutineScope.launch {
+              val selectedFolders = selectionManager.getSelectedItems()
+              if (selectedFolders.isNotEmpty()) {
+                when (op) {
+                  is CopyPasteOps.OperationType.Move -> {
+                    val needFallback = mutableListOf<VideoFolder>()
+                    for (folder in selectedFolders) {
+                      val dst = File(destinationPath, folder.name)
+                      if (!File(folder.path).renameTo(dst)) needFallback.add(folder)
+                    }
+                    if (needFallback.isNotEmpty()) {
+                      progressDialogOpen.value = true
+                      for (folder in needFallback) {
+                        val videos = MediaFileRepository.getVideosForBuckets(context, setOf(folder.bucketId))
+                        if (videos.isNotEmpty()) {
+                          val subDest = File(destinationPath, folder.name).also { it.mkdirs() }.absolutePath
+                          CopyPasteOps.moveFiles(context, videos, subDest)
+                        }
+                      }
+                    } else {
+                      selectionManager.clear()
+                      viewModel.refresh()
+                    }
+                  }
+                  is CopyPasteOps.OperationType.Copy -> {
+                    progressDialogOpen.value = true
+                    for (folder in selectedFolders) {
+                      val videos = MediaFileRepository.getVideosForBuckets(context, setOf(folder.bucketId))
+                      if (videos.isNotEmpty()) {
+                        val subDest = File(destinationPath, folder.name).also { it.mkdirs() }.absolutePath
+                        CopyPasteOps.copyFiles(context, videos, subDest)
+                      }
+                    }
+                  }
+                  else -> {}
+                }
+              }
+            }
+          }
+        },
+      )
+
+      if (operationType.value != null) {
+        FileOperationProgressDialog(
+          isOpen = progressDialogOpen.value,
+          operationType = operationType.value!!,
+          progress = operationProgress,
+          onCancel = { CopyPasteOps.cancelOperation() },
+          onDismiss = {
+            progressDialogOpen.value = false
+            operationType.value = null
+            selectionManager.clear()
+            viewModel.refresh()
+          },
+        )
+      }
+
+      if (renameDialogOpen && selectionManager.isSingleSelection) {
+        val folder = selectionManager.getSelectedItems().firstOrNull()
+        if (folder != null) {
+          RenameDialog(
+            isOpen = true,
+            onDismiss = { renameDialogOpen = false },
+            onConfirm = { newName ->
+              renameDialogOpen = false
+              coroutineScope.launch {
+                val ok = viewModel.renameFolder(folder, newName)
+                if (!ok) {
+                  android.widget.Toast.makeText(context, "Rename failed", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                selectionManager.clear()
+                viewModel.refresh()
+              }
+            },
+            currentName = folder.name,
+            itemType = "folder",
+          )
+        }
+      }
+
       DeleteConfirmationDialog(
         isOpen = deleteDialogOpen.value,
         onDismiss = { deleteDialogOpen.value = false },
@@ -670,6 +886,16 @@ object FolderListScreen : Screen {
         itemCount = selectionManager.selectedCount,
         itemNames = selectionManager.getSelectedItems().map { it.name },
       )
+
+      folderSelectionInfo?.let { (count, bytes, duration) ->
+        MultiSelectionInfoSheet(
+          count = count,
+          totalBytes = bytes,
+          totalDurationMs = duration,
+          onDismiss = { folderSelectionInfo = null },
+          unit = "folder",
+        )
+      }
     }
   }
 }
@@ -965,6 +1191,9 @@ private fun FolderSortDialog(
   val showTotalSizeChip by browserPreferences.showTotalSizeChip.collectAsState()
   val showDateChip by browserPreferences.showDateChip.collectAsState()
   val showFolderPath by browserPreferences.showFolderPath.collectAsState()
+  val showProgressBar by browserPreferences.showProgressBar.collectAsState()
+  val showSubtitleIndicator by browserPreferences.showSubtitleIndicator.collectAsState()
+  val showAudioFiles by browserPreferences.showAudioFiles.collectAsState()
   val unlimitedNameLines by appearancePreferences.unlimitedNameLines.collectAsState()
   val folderViewMode by browserPreferences.folderViewMode.collectAsState()
   val mediaLayoutMode by browserPreferences.mediaLayoutMode.collectAsState()
@@ -1076,6 +1305,13 @@ private fun FolderSortDialog(
         )
       },
     ),
+    contentToggles = listOf(
+      ContentToggle(
+        label = "Audio Files",
+        checked = showAudioFiles,
+        onCheckedChange = { browserPreferences.showAudioFiles.set(it) },
+      ),
+    ),
     visibilityToggles = listOf(
       VisibilityToggle(
         label = "Full Name",
@@ -1106,6 +1342,16 @@ private fun FolderSortDialog(
         label = "Date",
         checked = showDateChip,
         onCheckedChange = { browserPreferences.showDateChip.set(it) },
+      ),
+      VisibilityToggle(
+        label = "Progress Bar",
+        checked = showProgressBar,
+        onCheckedChange = { browserPreferences.showProgressBar.set(it) },
+      ),
+      VisibilityToggle(
+        label = "Subtitle Indicator",
+        checked = showSubtitleIndicator,
+        onCheckedChange = { browserPreferences.showSubtitleIndicator.set(it) },
       ),
     ),
     folderGridColumnSelector = folderGridColumnSelector,

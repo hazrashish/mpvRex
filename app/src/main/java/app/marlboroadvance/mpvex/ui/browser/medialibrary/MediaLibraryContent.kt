@@ -1,6 +1,7 @@
 package app.marlboroadvance.mpvex.ui.browser.medialibrary
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FloatingActionButton
@@ -57,6 +59,7 @@ import app.marlboroadvance.mpvex.preferences.PlayerPreferences
 import app.marlboroadvance.mpvex.preferences.preference.collectAsState
 import app.marlboroadvance.mpvex.ui.browser.components.BrowserBottomBar
 import app.marlboroadvance.mpvex.ui.browser.components.BrowserTopBar
+import app.marlboroadvance.mpvex.ui.browser.components.SelectionOverflowAction
 import app.marlboroadvance.mpvex.ui.browser.dialogs.DeleteConfirmationDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.RenameDialog
 import app.marlboroadvance.mpvex.ui.browser.selection.rememberSelectionManager
@@ -64,6 +67,8 @@ import app.marlboroadvance.mpvex.ui.browser.videolist.VideoListContent
 import app.marlboroadvance.mpvex.ui.browser.videolist.VideoSortDialog
 import app.marlboroadvance.mpvex.ui.browser.videolist.VideoWithPlaybackInfo
 import app.marlboroadvance.mpvex.ui.utils.LocalBackStack
+import app.marlboroadvance.mpvex.ui.browser.sheets.MarkAsBottomSheet
+import app.marlboroadvance.mpvex.utils.history.MarkAsState
 import app.marlboroadvance.mpvex.utils.history.RecentlyPlayedOps
 import app.marlboroadvance.mpvex.utils.media.MediaUtils
 import app.marlboroadvance.mpvex.utils.sort.SortUtils
@@ -124,6 +129,9 @@ fun MediaLibraryContent() {
   val deleteDialogOpen = rememberSaveable { mutableStateOf(false) }
   val renameDialogOpen = rememberSaveable { mutableStateOf(false) }
 
+  var mediaInfoUri by remember { mutableStateOf<Uri?>(null) }
+  var multiSelectionInfo by remember { mutableStateOf<Triple<Int, Long, Long>?>(null) }
+
   // Search state
   var searchQuery by rememberSaveable { mutableStateOf("") }
   var isSearching by rememberSaveable { mutableStateOf(false) }
@@ -133,6 +141,7 @@ fun MediaLibraryContent() {
 
   // Bottom bar animation state
   var showFloatingBottomBar by remember { mutableStateOf(false) }
+  var showMarkAsSheet by remember { mutableStateOf(false) }
   val animationDuration = 300
 
   LaunchedEffect(selectionManager.isInSelectionMode) {
@@ -202,21 +211,28 @@ fun MediaLibraryContent() {
             backstack.add(app.marlboroadvance.mpvex.ui.preferences.PreferencesScreen)
           },
           onDeleteClick = { deleteDialogOpen.value = true },
+          deleteInOverflow = true,
           isSingleSelection = selectionManager.isSingleSelection,
           onInfoClick = {
+            val selected = selectionManager.getSelectedItems()
             if (selectionManager.isSingleSelection) {
-              val video = selectionManager.getSelectedItems().firstOrNull()
-              if (video != null) {
-                val intent = Intent(context, app.marlboroadvance.mpvex.ui.mediainfo.MediaInfoActivity::class.java)
-                intent.action = Intent.ACTION_VIEW
-                intent.data = video.uri
-                context.startActivity(intent)
-                selectionManager.clear()
-              }
+              mediaInfoUri = selected.firstOrNull()?.uri
+            } else {
+              multiSelectionInfo = Triple(
+                selected.size,
+                selected.sumOf { it.size },
+                selected.sumOf { it.duration },
+              )
             }
           },
-          onShareClick = { selectionManager.shareSelected() },
           onPlayClick = { selectionManager.playSelected() },
+          selectionOverflowActions = listOf(
+            SelectionOverflowAction(
+              icon = Icons.Filled.Share,
+              label = "Share",
+              onClick = { selectionManager.shareSelected() },
+            ),
+          ),
           onSelectAll = { selectionManager.selectAll() },
           onInvertSelection = { selectionManager.invertSelection() },
           onDeselectAll = { selectionManager.clear() },
@@ -314,6 +330,7 @@ fun MediaLibraryContent() {
           onRenameClick = { renameDialogOpen.value = true },
           onDeleteClick = { deleteDialogOpen.value = true },
           onAddToPlaylistClick = { /* N/A */ },
+          onMarkAsClick = { showMarkAsSheet = true },
           showCopy = false,
           showMove = false,
           showAddToPlaylist = false,
@@ -360,6 +377,33 @@ fun MediaLibraryContent() {
           itemType = "video"
         )
       }
+    }
+
+    if (showMarkAsSheet) {
+      MarkAsBottomSheet(
+        onDismiss = { showMarkAsSheet = false },
+        onMarkAs = { state ->
+          val selected = selectionManager.getSelectedItems()
+          coroutineScope.launch {
+            selected.forEach { video ->
+              RecentlyPlayedOps.markAs(
+                filePath = video.path,
+                fileName = video.displayName,
+                duration = video.duration,
+                state = state,
+              )
+            }
+            viewModel.refresh()
+          }
+        },
+      )
+    }
+
+    mediaInfoUri?.let { uri ->
+      app.marlboroadvance.mpvex.ui.browser.sheets.MediaInfoSheet(uri = uri, onDismiss = { mediaInfoUri = null })
+    }
+    multiSelectionInfo?.let { (count, bytes, duration) ->
+      app.marlboroadvance.mpvex.ui.browser.sheets.MultiSelectionInfoSheet(count = count, totalBytes = bytes, totalDurationMs = duration, onDismiss = { multiSelectionInfo = null })
     }
   }
 }

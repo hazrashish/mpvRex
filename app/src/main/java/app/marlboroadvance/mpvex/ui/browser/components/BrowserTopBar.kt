@@ -3,6 +3,7 @@ package app.marlboroadvance.mpvex.ui.browser.components
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.padding
@@ -21,9 +22,11 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RemoveCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SortByAlpha
 import androidx.compose.material.icons.filled.ViewComfy
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -65,6 +68,16 @@ import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 
 /**
+ * An action that appears in the selection-mode overflow (⋮) menu.
+ * Pass a list of these via [BrowserTopBar.selectionOverflowActions] to populate the menu.
+ */
+data class SelectionOverflowAction(
+  val icon: ImageVector,
+  val label: String,
+  val onClick: () -> Unit,
+)
+
+/**
  * Unified top bar for browser screens that switches between normal and selection modes
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -84,15 +97,15 @@ fun BrowserTopBar(
   onRenameClick: (() -> Unit)? = null,
   isSingleSelection: Boolean = false,
   onInfoClick: (() -> Unit)? = null,
-  onShareClick: (() -> Unit)? = null,
   onPlayClick: (() -> Unit)? = null,
-  onBlacklistClick: (() -> Unit)? = null,
   onSelectAll: (() -> Unit)? = null,
   onInvertSelection: (() -> Unit)? = null,
   onDeselectAll: (() -> Unit)? = null,
+  selectionOverflowActions: List<SelectionOverflowAction> = emptyList(),
   additionalActions: @Composable RowScope.() -> Unit = { },
   onTitleLongPress: (() -> Unit)? = null,
   useRemoveIcon: Boolean = false,
+  deleteInOverflow: Boolean = false,
 ) {
   if (isInSelectionMode) {
     SelectionTopBar(
@@ -103,14 +116,14 @@ fun BrowserTopBar(
       onRename = onRenameClick,
       isSingleSelection = isSingleSelection,
       onInfo = onInfoClick,
-      onShare = onShareClick,
       onPlay = onPlayClick,
-      onBlacklist = onBlacklistClick,
       onSelectAll = onSelectAll,
       onInvertSelection = onInvertSelection,
       onDeselectAll = onDeselectAll,
+      overflowActions = selectionOverflowActions,
       modifier = modifier,
       useRemoveIcon = useRemoveIcon,
+      deleteInOverflow = deleteInOverflow,
     )
   } else {
     NormalTopBar(
@@ -303,16 +316,17 @@ private fun SelectionTopBar(
   onRename: (() -> Unit)?,
   isSingleSelection: Boolean,
   onInfo: (() -> Unit)?,
-  onShare: (() -> Unit)?,
   onPlay: (() -> Unit)?,
-  onBlacklist: (() -> Unit)?,
   onSelectAll: (() -> Unit)?,
   onInvertSelection: (() -> Unit)?,
   onDeselectAll: (() -> Unit)?,
+  overflowActions: List<SelectionOverflowAction> = emptyList(),
   modifier: Modifier = Modifier,
   useRemoveIcon: Boolean = false,
+  deleteInOverflow: Boolean = false,
 ) {
   var showDropdown by remember { mutableStateOf(false) }
+  var showOverflowMenu by remember { mutableStateOf(false) }
 
   TopAppBar(
     colors = TopAppBarDefaults.topAppBarColors(
@@ -425,69 +439,105 @@ private fun SelectionTopBar(
         }
       }
 
+      // Remove icon (playlist style) — shown before Info for muscle-memory consistency
+      if (onDelete != null && useRemoveIcon) {
+        IconButton(
+          onClick = onDelete,
+          modifier = Modifier.padding(horizontal = 2.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.RemoveCircle,
+            contentDescription = stringResource(R.string.delete),
+            modifier = Modifier.size(24.dp),
+            tint = MaterialTheme.colorScheme.error,
+          )
+        }
+      }
+
       // Info icon
       if (onInfo != null) {
         IconButton(
           onClick = onInfo,
-          enabled = isSingleSelection,
           modifier = Modifier.padding(horizontal = 2.dp),
         ) {
           Icon(
             Icons.Filled.Info,
             contentDescription = stringResource(R.string.info),
             modifier = Modifier.size(24.dp),
-            tint =
-              if (isSingleSelection) {
-                MaterialTheme.colorScheme.secondary
-              } else {
-                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-              },
-          )
-        }
-      }
-
-      // Share icon
-      if (onShare != null) {
-        IconButton(
-          onClick = onShare,
-          modifier = Modifier.padding(horizontal = 2.dp),
-        ) {
-          Icon(
-            Icons.Filled.Share,
-            contentDescription = stringResource(R.string.generic_share),
-            modifier = Modifier.size(24.dp),
             tint = MaterialTheme.colorScheme.secondary,
           )
         }
       }
 
-      // Blacklist icon
-      if (onBlacklist != null) {
-        IconButton(
-          onClick = onBlacklist,
-          modifier = Modifier.padding(horizontal = 2.dp),
-        ) {
-          Icon(
-            Icons.Filled.Block,
-            contentDescription = stringResource(R.string.pref_folders_blacklist),
-            modifier = Modifier.size(24.dp),
-            tint = MaterialTheme.colorScheme.secondary,
-          )
-        }
-      }
-
-      // Delete/Remove icon
-      if (onDelete != null) {
+      // Delete icon — inline only when not using remove icon and not delegated to overflow
+      if (onDelete != null && !useRemoveIcon && !deleteInOverflow) {
         IconButton(
           onClick = onDelete,
           modifier = Modifier.padding(horizontal = 2.dp),
         ) {
           Icon(
-            imageVector = if (useRemoveIcon) Icons.Filled.RemoveCircle else Icons.Filled.Delete,
+            imageVector = Icons.Filled.Delete,
             contentDescription = stringResource(R.string.delete),
             modifier = Modifier.size(24.dp),
             tint = MaterialTheme.colorScheme.error,
           )
+        }
+      }
+
+      // Overflow (⋮) menu — shown when there are overflow actions or delete is delegated here
+      val hasDeleteInOverflow = deleteInOverflow && onDelete != null
+      if (overflowActions.isNotEmpty() || hasDeleteInOverflow) {
+        Box(modifier = Modifier.padding(start = 0.dp, end = 4.dp)) {
+          IconButton(
+            onClick = { showOverflowMenu = true },
+          ) {
+            Icon(
+              Icons.Filled.MoreVert,
+              contentDescription = "More options",
+              modifier = Modifier.size(24.dp),
+              tint = MaterialTheme.colorScheme.secondary,
+            )
+          }
+          DropdownMenu(
+            expanded = showOverflowMenu,
+            onDismissRequest = { showOverflowMenu = false },
+          ) {
+            // Delete shown first in overflow when deleteInOverflow is set
+            if (hasDeleteInOverflow) {
+              DropdownMenuItem(
+                leadingIcon = {
+                  Icon(
+                    imageVector = Icons.Filled.Delete,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.error,
+                  )
+                },
+                text = { Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error) },
+                onClick = {
+                  onDelete()
+                  showOverflowMenu = false
+                },
+              )
+            }
+            overflowActions.forEach { action ->
+              DropdownMenuItem(
+                leadingIcon = {
+                  Icon(
+                    imageVector = action.icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                },
+                text = { Text(action.label) },
+                onClick = {
+                  action.onClick()
+                  showOverflowMenu = false
+                },
+              )
+            }
+          }
         }
       }
     },

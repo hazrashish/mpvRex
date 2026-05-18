@@ -1,6 +1,7 @@
 package app.marlboroadvance.mpvex.ui.browser.videolist
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Environment
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -88,6 +90,7 @@ import app.marlboroadvance.mpvex.BuildConfig
 import app.marlboroadvance.mpvex.ui.browser.cards.VideoCard
 import app.marlboroadvance.mpvex.ui.browser.components.BrowserBottomBar
 import app.marlboroadvance.mpvex.ui.browser.components.BrowserTopBar
+import app.marlboroadvance.mpvex.ui.browser.components.SelectionOverflowAction
 import app.marlboroadvance.mpvex.ui.browser.dialogs.AddToPlaylistDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.DeleteConfirmationDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.FileOperationProgressDialog
@@ -96,15 +99,20 @@ import app.marlboroadvance.mpvex.ui.browser.dialogs.GridColumnSelector
 import app.marlboroadvance.mpvex.ui.browser.dialogs.LoadingDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.RenameDialog
 import app.marlboroadvance.mpvex.ui.browser.dialogs.SortDialog
+import app.marlboroadvance.mpvex.ui.browser.sheets.MediaInfoSheet
+import app.marlboroadvance.mpvex.ui.browser.sheets.MultiSelectionInfoSheet
 import app.marlboroadvance.mpvex.ui.browser.dialogs.ViewModeSelector
 import app.marlboroadvance.mpvex.ui.browser.dialogs.MultiViewModeSelector
 import app.marlboroadvance.mpvex.ui.browser.dialogs.ViewModeOption
+import app.marlboroadvance.mpvex.ui.browser.dialogs.ContentToggle
 import app.marlboroadvance.mpvex.ui.browser.dialogs.VisibilityToggle
 import app.marlboroadvance.mpvex.ui.browser.fab.FabScrollHelper
 import app.marlboroadvance.mpvex.ui.browser.selection.SelectionManager
 import app.marlboroadvance.mpvex.ui.browser.selection.rememberSelectionManager
 import app.marlboroadvance.mpvex.ui.browser.states.EmptyState
 import app.marlboroadvance.mpvex.ui.utils.LocalBackStack
+import app.marlboroadvance.mpvex.ui.browser.sheets.MarkAsBottomSheet
+import app.marlboroadvance.mpvex.utils.history.MarkAsState
 import app.marlboroadvance.mpvex.utils.history.RecentlyPlayedOps
 import app.marlboroadvance.mpvex.utils.media.CopyPasteOps
 import app.marlboroadvance.mpvex.utils.media.MediaUtils
@@ -220,12 +228,15 @@ data class VideoListScreen(
     val privateSpaceMovedCount = remember { mutableIntStateOf(0) }
 
     val displayFolderName = videos.firstOrNull()?.bucketDisplayName ?: folderName
+    var mediaInfoUri by remember { mutableStateOf<Uri?>(null) }
+    var multiSelectionInfo by remember { mutableStateOf<Triple<Int, Long, Long>?>(null) }
 
     // FAB visibility state
     val isFabVisible = remember { mutableStateOf(true) }
 
     // Bottom bar animation state
     var showFloatingBottomBar by remember { mutableStateOf(false) }
+    var showMarkAsSheet by remember { mutableStateOf(false) }
     val animationDuration = 300
 
     // Handle selection mode changes with animation
@@ -279,19 +290,25 @@ data class VideoListScreen(
           },
           isSingleSelection = selectionManager.isSingleSelection,
           onInfoClick = {
+            val selected = selectionManager.getSelectedItems()
             if (selectionManager.isSingleSelection) {
-              val video = selectionManager.getSelectedItems().firstOrNull()
-              if (video != null) {
-                val intent = Intent(context, app.marlboroadvance.mpvex.ui.mediainfo.MediaInfoActivity::class.java)
-                intent.action = Intent.ACTION_VIEW
-                intent.data = video.uri
-                context.startActivity(intent)
-                selectionManager.clear()
-              }
+              mediaInfoUri = selected.firstOrNull()?.uri
+            } else {
+              multiSelectionInfo = Triple(
+                selected.size,
+                selected.sumOf { it.size },
+                selected.sumOf { it.duration },
+              )
             }
           },
-          onShareClick = { selectionManager.shareSelected() },
           onPlayClick = { selectionManager.playSelected() },
+          selectionOverflowActions = listOf(
+            SelectionOverflowAction(
+              icon = Icons.Filled.Share,
+              label = "Share",
+              onClick = { selectionManager.shareSelected() },
+            ),
+          ),
           onSelectAll = { selectionManager.selectAll() },
           onInvertSelection = { selectionManager.invertSelection() },
           onDeselectAll = { selectionManager.clear() },
@@ -402,6 +419,7 @@ data class VideoListScreen(
             onRenameClick = { renameDialogOpen.value = true },
             onDeleteClick = { deleteDialogOpen.value = true },
             onAddToPlaylistClick = { addToPlaylistDialogOpen.value = true },
+            onMarkAsClick = { showMarkAsSheet = true },
             showRename = selectionManager.isSingleSelection
           )
         }
@@ -442,6 +460,27 @@ data class VideoListScreen(
             extension = if (extension != ".") extension else null,
           )
         }
+      }
+
+      // Mark As Sheet
+      if (showMarkAsSheet) {
+        MarkAsBottomSheet(
+          onDismiss = { showMarkAsSheet = false },
+          onMarkAs = { state ->
+            val selected = selectionManager.getSelectedItems()
+            coroutineScope.launch {
+              selected.forEach { video ->
+                RecentlyPlayedOps.markAs(
+                  filePath = video.path,
+                  fileName = video.displayName,
+                  duration = video.duration,
+                  state = state,
+                )
+              }
+              viewModel.refresh()
+            }
+          },
+        )
       }
 
       // Folder Picker Dialog
@@ -542,6 +581,13 @@ data class VideoListScreen(
           viewModel.refresh()
         },
       )
+
+      mediaInfoUri?.let { uri ->
+        MediaInfoSheet(uri = uri, onDismiss = { mediaInfoUri = null })
+      }
+      multiSelectionInfo?.let { (count, bytes, duration) ->
+        MultiSelectionInfoSheet(count = count, totalBytes = bytes, totalDurationMs = duration, onDismiss = { multiSelectionInfo = null })
+      }
     }
   }
 }
@@ -873,6 +919,7 @@ fun VideoSortDialog(
   val videoGridColumns = if (isLandscape) videoGridColumnsLandscape else videoGridColumnsPortrait
   val folderGridColumns = if (isLandscape) folderGridColumnsLandscape else folderGridColumnsPortrait
   val appearancePreferences = koinInject<AppearancePreferences>()
+  val showAudioFiles by browserPreferences.showAudioFiles.collectAsState()
   val showThumbnails by browserPreferences.showVideoThumbnails.collectAsState()
   val showSizeChip by browserPreferences.showSizeChip.collectAsState()
   val showResolutionChip by browserPreferences.showResolutionChip.collectAsState()
@@ -981,6 +1028,13 @@ fun VideoSortDialog(
         )
       },
     ),
+    contentToggles = listOf(
+      ContentToggle(
+        label = "Audio Files",
+        checked = showAudioFiles,
+        onCheckedChange = { browserPreferences.showAudioFiles.set(it) },
+      ),
+    ),
     visibilityToggles =
       listOf(
         VisibilityToggle(
@@ -1017,6 +1071,11 @@ fun VideoSortDialog(
           label = "Date",
           checked = showDateChip,
           onCheckedChange = { browserPreferences.showDateChip.set(it) },
+        ),
+        VisibilityToggle(
+          label = "Progress Bar",
+          checked = showProgressBar,
+          onCheckedChange = { browserPreferences.showProgressBar.set(it) },
         ),
       ),
     folderGridColumnSelector = folderGridColumnSelector,
